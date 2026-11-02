@@ -93,7 +93,8 @@ vugo -src ./templates -dst ./dist
 vugo/
 ├── cmd/
 │   └── vugo/
-│       └── main.go              # CLI 入口：解析 flag、调度 Compiler、处理目录或单文件
+│       ├── main.go              # CLI 入口：解析 flag、调度 Compiler、处理目录或单文件
+│       └── main_test.go         # CLI 端到端测试：stdin / 文件 / 目录三种模式 + 错误路径
 ├── internal/
 │   ├── lexer/
 │   │   ├── lexer.go             # 词法分析：源码 → token 流（Text/Mustache/Comment/OpenTag/CloseTag/...）
@@ -114,14 +115,21 @@ vugo/
 │   │   ├── transpiler.go        # AST → html/template 源码的主体编排
 │   │   ├── directive.go         # 不支持的指令/绑定的报错与替代方案
 │   │   ├── for.go               # v-for 解析与展开为 {{ range }}…{{ end }}
-│   │   └── transpiler_test.go
+│   │   └── transpiler_test.go   # 黄金文件对照 + v-for 语义 + XSS 转义 + 不支持语法
 │   ├── compiler/
-│   │   └── compiler.go          # 流水线编排：lexer→parser→transpiler→validate，可注入 Funcs
+│   │   ├── compiler.go          # 流水线编排：lexer→parser→transpiler→validate，可注入 Funcs
+│   │   └── compiler_test.go     # 公共 API 测试：Compile/CompileFile/Transpile/Validate 开关
 │   └── validate/
 │       └── validate.go          # 用 html/template.Parse 校验产物
+├── testdata/                    # 黄金文件：*.vugo 为输入，*.tmpl 为期望产物
+│   ├── basic.vugo / basic.tmpl         # 插值、静态属性、注释、void 标签
+│   ├── for.vugo / for.tmpl             # v-for 单变量与 (item, index) 双变量
+│   ├── for-nested.vugo / for-nested.tmpl # 嵌套 v-for 的作用域语义
+│   ├── expr.vugo / expr.tmpl           # 表达式映射（===/!==/&&/||/!/>/函数调用）
+│   └── passthrough.vugo / passthrough.tmpl # 原生 html/template action 原样透传
 ├── AGENTS.md                    # 项目规约、转译映射、注释规范
 ├── README.md                    # 本文件
-├── Makefile                     # build / test / fmt / vet / run
+├── Makefile                     # build / test / cover / fmt / vet / run
 ├── go.mod
 └── LICENSE
 ```
@@ -135,6 +143,7 @@ vugo/
 | 文件 | 职责 | 输入 | 输出 | 上游 / 下游 |
 | :--- | :--- | :--- | :--- | :--- |
 | `cmd/vugo/main.go` | CLI 入口：解析 `-src/-dst/-in/-out/-funcs/-no-validate/-v`；按入参选择「目录批量 / 文件列表 / 标准输入」三种工作模式 | 命令行参数、文件或目录 | 转译后文件、`vugo: ...` 错误 | 调用 `compiler.New()`；被用户直接执行 |
+| `cmd/vugo/main_test.go` | CLI 端到端测试：用 `bytes.Buffer` 捕获 stdout/stderr，覆盖 stdin / 单文件 / 目录批处理三种模式、`-funcs` 与 `-no-validate` 开关、以及不支持语法的报错路径 | 命令行参数、临时目录中的 `.vugo` 文件 | 测试断言 | 被 `go test ./cmd/vugo` 调用 |
 | `internal/lexer/lexer.go` | 把源码切成 token 序列，识别 `{{ }}` `<!-- -->`、开始/自闭合/结束标签；处理属性中的引号、`<!DOCTYPE>` 等声明 | 模板源码字符串 | `[]lexer.Token` | 被 `parser.ParseString` 调用 |
 | `internal/parser/parser.go` | 维护开标签栈还原嵌套结构，把 token 流构造成 `ast.Document`；解析属性为 `Attr/Directive/Binding`；区分类 Vue 与原生 `html/template` action | `[]lexer.Token` | `*ast.Document` | 被 `compiler.Compile` / `parser.ParseString` 调用 |
 | `internal/ast/ast.go` | 模板 AST 节点定义：`Document/Text/Interpolation/GoAction/Element(含 Void 判断)/Directive/Binding`；提供 `Node` 公共接口 | — | — | 被 `parser` 生产、`transpiler` 消费 |
@@ -147,7 +156,9 @@ vugo/
 | `internal/transpiler/for.go` | 解析 `v-for` 表达式 `item in list` / `(item, index) in list`，返回 `*ForDirective`；生成 `range` 头并把循环变量压栈 | 指令值字符串 | `*ForDirective` | 被 `transpiler.writeElement` 调用 |
 | `internal/transpiler/directive.go` | 检查元素指令/绑定是否支持，对 `v-if/v-model/v-slot/v-html/...` 等给出明确的「暂未实现 + 替代方案」错误 | `*ast.Element` | `error` | 被 `transpiler.resolveElement` 调用 |
 | `internal/compiler/compiler.go` | 流水线编排：parser → transpiler → validate；暴露 `Compile`/`CompileFile`/`Transpile`，可注入 `Funcs` 用于校验 | 源码或文件路径 | 转译后字符串 | 被 `cmd/vugo` 调用 |
+| `internal/compiler/compiler_test.go` | 公共 API 测试：`Compile`/`CompileFile`/`Transpile` 的产物、`Validate` 开关、`Funcs` 注入效果、错误前缀 `vugo:` 与行号 | 模板源码、临时文件 | 测试断言 | 被 `go test ./internal/compiler` 调用 |
 | `internal/validate/validate.go` | 用 `html/template` 的 `template.New(...).Funcs(...).Parse(...)` 校验产物 | 模板名、源码、`Funcs` | `error` | 被 `compiler.Compile` 调用 |
+| `testdata/*.vugo` + `testdata/*.tmpl` | 黄金文件（golden file）用例：`.vugo` 为类 Vue 输入，`.tmpl` 为期望的 html/template 产物，两者逐字节对照 | 模板源码 | 期望产物 | 被 `internal/transpiler` 的 `TestGoldenFiles` 遍历 |
 
 ---
 
@@ -230,6 +241,64 @@ flowchart TD
     FileMode --> End
     StdinMode --> End
 ```
+
+---
+
+## 测试
+
+### 测试分层
+
+本项目的测试按「层」组织，每层验证一件事，由内向外递进：
+
+| 层 | 位置 | 验证内容 | 特点 |
+| :--- | :--- | :--- | :--- |
+| 词法 | `internal/lexer/lexer_test.go` | 源码 → token 的切分是否正确 | 不涉及语义 |
+| 表达式 | `internal/expr/expr_test.go` | 表达式 AST → html/template 源码的映射 | 覆盖 `===`/`&&`/`!`/函数调用等改写 |
+| 语法 | `internal/parser/parser_test.go` | token → AST 的结构还原、指令/绑定/原生 action 的判定 | 不涉及改写 |
+| 转译 | `internal/transpiler/transpiler_test.go` | 黄金文件逐字节对照 + `v-for` 语义 + XSS 转义 + 不支持语法报错 | 端到端语义的主战场 |
+| 公共 API | `internal/compiler/compiler_test.go` | `Compile`/`CompileFile`/`Transpile`/`Validate`/`Funcs` | 面向调用方的契约 |
+| CLI | `cmd/vugo/main_test.go` | stdin / 单文件 / 目录批处理三种模式与错误路径 | 面向用户的契约 |
+
+### 常用命令
+
+```bash
+make test          # 跑全部测试
+make cover         # 跑测试并输出覆盖率（跨包统计，总计约 84%）
+make lint          # gofmt + go vet
+make run           # 编译后把 testdata/*.vugo 转译到 /tmp/vugo-out
+```
+
+单独跑某个包或某个用例：
+
+```bash
+go test ./internal/transpiler/       # 只跑转译层
+go test -run TestGoldenFiles ./...   # 只跑黄金文件对照
+go test -v -run TestNestedFor ./...  # 看单个用例的详细输出
+```
+
+> **覆盖率注意事项**：Go 的覆盖率默认按「被测包」统计，`internal/ast`、`internal/compiler`、`internal/validate` 会被显示为 0%，但它们实际上被其它包的测试间接覆盖。`make cover` 使用 `-coverpkg=./...` 做跨包统计，看到的才是真实覆盖率。
+
+### 黄金文件工作流
+
+`testdata/` 下每个 `X.vugo` 都配一个同名 `X.tmpl`，`TestGoldenFiles` 会逐字节对照转译产物。**新增或修改语法支持时，按以下步骤更新黄金文件**：
+
+1. 写一个最小化的 `testdata/新特性.vugo`；
+2. 生成产物并人工确认语义正确：
+
+   ```bash
+   go run ./cmd/vugo -src ./testdata -dst /tmp/vugo-out -funcs formatTime
+   cp /tmp/vugo-out/新特性.tmpl testdata/新特性.tmpl
+   ```
+
+3. `go test ./internal/transpiler/` 确认对照通过。
+
+> 黄金文件里的 `.tmpl` 是**契约**：写进去就等于声明「这类语法会被转译成这样」。因此只应把**已支持且语义正确**的语法写进黄金文件；尚未支持的语法应写进 `TestUnsupportedSyntax` 这类报错用例。
+
+### 校验与安全
+
+- 每一次转译产物都会经过 `html/template.Parse` 校验，因此语法非法的产物不会流入业务代码。
+- `TestXSSAutoEscape` 验证用户输入仍由 `html/template` 自动转义，**不要**在转译器里手工调用 `template.HTML` 绕过它。
+- 涉及自定义函数（`formatTime` 等）的模板，校验时必须注册同名桩函数，否则 `Parse` 会报 `function not defined`；CLI 用 `-funcs` 传参。
 
 ---
 

@@ -75,6 +75,33 @@ func TestForExecution(t *testing.T) {
 	}
 }
 
+// TestNestedForExecution 验证嵌套 v-for 的作用域语义：
+// 外层单变量循环把元素绑定到点作用域，内层循环的可迭代对象要在外层点作用域中求值。
+func TestNestedForExecution(t *testing.T) {
+	out := mustTranspile(t, `<div><section v-for="group in groups"><h2>{{ group.title }}</h2>`+
+		`<ul><li v-for="(child, idx) in group.children">{{ idx }}. {{ child.name }}</li></ul>`+
+		`</section></div>`)
+	tmpl, err := template.New("t").Parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	data := map[string]any{
+		"groups": []map[string]any{
+			{"title": "A", "children": []map[string]any{{"name": "a1"}, {"name": "a2"}}},
+			{"title": "B", "children": []map[string]any{{"name": "b1"}}},
+		},
+	}
+	if err := tmpl.Execute(&buf, data); err != nil {
+		t.Fatal(err)
+	}
+	want := "<div><section><h2>A</h2><ul><li>0. a1</li><li>1. a2</li></ul></section>" +
+		"<section><h2>B</h2><ul><li>0. b1</li></ul></section></div>"
+	if got := buf.String(); got != want {
+		t.Errorf("渲染结果 = %q, 期望 %q", got, want)
+	}
+}
+
 // TestXSSAutoEscape 确保转译没有破坏 html/template 的自动转义。
 func TestXSSAutoEscape(t *testing.T) {
 	out := mustTranspile(t, `<p>{{ comment }}</p>`)

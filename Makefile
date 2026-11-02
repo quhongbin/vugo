@@ -13,7 +13,7 @@ test: ## 运行全部测试
 	go test $(PKG)
 
 cover: ## 运行测试并输出覆盖率
-	go test -coverprofile=coverage.out $(PKG) && go tool cover -func=coverage.out
+	go test -coverpkg=./... -coverprofile=coverage.out $(PKG) && go tool cover -func=coverage.out
 
 fmt: ## 格式化代码
 	gofmt -l -w .
@@ -27,7 +27,7 @@ tidy: ## 整理依赖
 	go mod tidy
 
 run: build ## 编译后转译 testdata 示例到 /tmp/vugo-out
-	$(BIN) -src ./testdata -dst /tmp/vugo-out
+	$(BIN) -src ./testdata -dst /tmp/vugo-out -funcs formatTime
 
 clean: ## 清理构建产物
 	rm -rf bin coverage.out
