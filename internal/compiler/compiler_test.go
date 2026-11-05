@@ -113,3 +113,52 @@ func TestCompileErrorPrefix(t *testing.T) {
 		t.Errorf("错误信息应包含行号, 实际: %v", err)
 	}
 }
+
+// TestCompileTemplateAndAddParseTree 验证直接构建 parse.Tree 并通过 AddParseTree 挂载到 html/template 执行。
+func TestCompileTemplateAndAddParseTree(t *testing.T) {
+	src := `{{ define "badge" }}<span>[{{ label }}]</span>{{ end }}` +
+		`<div>{{ template "badge" . }}<ul><li v-for="(item, idx) in items">{{ idx }}:{{ item.name }}</li></ul></div>`
+
+	c := compiler.New()
+	tmpl, err := c.CompileTemplate(src)
+	if err != nil {
+		t.Fatalf("CompileTemplate 失败: %v", err)
+	}
+
+	var sb strings.Builder
+	data := map[string]any{
+		"label": "<admin>",
+		"items": []map[string]any{
+			{"name": "<b>alice</b>"},
+			{"name": "bob"},
+		},
+	}
+	if err := tmpl.Execute(&sb, data); err != nil {
+		t.Fatalf("Execute 失败: %v", err)
+	}
+	want := `<div><span>[&lt;admin&gt;]</span><ul><li>0:&lt;b&gt;alice&lt;/b&gt;</li><li>1:bob</li></ul></div>`
+	if got := sb.String(); got != want {
+		t.Errorf("Execute = %q, 期望 %q", got, want)
+	}
+}
+
+// TestAddToTemplateEscapeErrorLocation 验证当 html/template 在转义阶段报错时，
+// 节点的 Pos 与 tr 能正确指向原始 .vugo 源码的行号。
+func TestAddToTemplateEscapeErrorLocation(t *testing.T) {
+	// 第 3 行在 <script> 的字符串字面量中未闭合引号便结束 <script>，触发 html/template 转义错误
+	src := "<div>\n  <p>{{ msg }}</p>\n  <script>var x = \"{{ bad }};</script>\n</div>"
+	c := compiler.New()
+	c.Name = "page.vugo"
+	tmpl, err := c.CompileTemplate(src)
+	if err != nil {
+		t.Fatalf("CompileTemplate 失败: %v", err)
+	}
+	var sb strings.Builder
+	err = tmpl.Execute(&sb, map[string]any{"msg": "hi", "bad": "1"})
+	if err == nil {
+		t.Fatal("未闭合的 JS 字符串应当在 escape 阶段报错")
+	}
+	if !strings.Contains(err.Error(), "html/template:page.vugo:") {
+		t.Errorf("期望报错包含模板名 page.vugo, 实际: %v", err)
+	}
+}

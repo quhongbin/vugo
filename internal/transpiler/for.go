@@ -3,26 +3,45 @@ package transpiler
 import (
 	"fmt"
 	"strings"
+	"text/template/parse"
 
 	"github.com/quhongbin/vugo/internal/expr"
+	"github.com/quhongbin/vugo/internal/node"
 )
 
 // ForDirective 描述一个解析完成的 v-for 指令。
 type ForDirective struct {
-	Iterable string            // 可迭代对象的类 Vue 表达式，如 "user.todos"
-	Frame    map[string]string // 循环变量 -> 模板前缀，进入循环体时压入作用域
-	vars     []string          // [value] 或 [value, index]
+	Iterable       string            // 可迭代对象的类 Vue 表达式，如 "user.todos"
+	IterableOffset int               // Iterable 在指令值中的字节偏移
+	Frame          map[string]string // 循环变量 -> 模板前缀，进入循环体时压入作用域
+	vars           []string          // [value] 或 [value, index]
 }
 
-// Header 生成 range 的开启 action（不含花括号）。
-// iterable 为已转译后的可迭代对象表达式。
-func (f *ForDirective) Header(iterable string) string {
-	if len(f.vars) == 1 {
-		// v-for="item in list" -> {{ range .list }}，循环体内用 . 访问元素
-		return "range " + iterable
+// Pipe 构建 range 节点的管道（被遍历对象 + 可选的变量声明）。
+//
+// 单变量 `item in list` 得到 `.list`，循环体内用 `.` 访问元素；
+// 双变量 `(item, index) in list` 得到 `$index, $item := .list`（Go 的下标在前）。
+//
+// 参数:
+//   - fac:      节点工厂。
+//   - valuePos: v-for 指令值首字节在 .vugo 源码中的偏移。
+//   - scope:    循环外的作用域，被遍历对象在其中求值（调用时尚未 Push 本层 Frame）。
+//
+// 返回值:
+//   - *parse.PipeNode: 可直接交给 node.Factory.Range 的管道。
+//   - error: 被遍历对象表达式无法构建时返回，信息以 `vugo: 表达式` 开头。
+func (f *ForDirective) Pipe(fac *node.Factory, valuePos int, scope *expr.Scope) (*parse.PipeNode, error) {
+	pipe, err := expr.Build(f.Iterable, valuePos+f.IterableOffset, scope, fac)
+	if err != nil {
+		return nil, err
 	}
-	// v-for="(item, index) in list" -> {{ range $index, $item := .list }}
-	return "range $" + f.vars[1] + ", $" + f.vars[0] + " := " + iterable
+	if len(f.vars) == 2 {
+		pipe.Decl = []*parse.VariableNode{
+			fac.Variable(valuePos, "$"+f.vars[1]),
+			fac.Variable(valuePos, "$"+f.vars[0]),
+		}
+	}
+	return pipe, nil
 }
 
 // parseFor 解析 v-for 指令的表达式。
@@ -37,7 +56,9 @@ func parseFor(value string) (*ForDirective, error) {
 	}
 
 	left := strings.TrimSpace(value[:split])
-	right := strings.TrimSpace(value[split+len(" in "):])
+	rest := value[split+len(" in "):]
+	right := strings.TrimSpace(rest)
+	rightOffset := split + len(" in ") + len(rest) - len(strings.TrimLeft(rest, " \t\n\r"))
 	if left == "" || right == "" {
 		return nil, fmt.Errorf("v-for 语法应为 \"item in list\" 或 \"(item, index) in list\"，实际为 %q", value)
 	}
@@ -51,7 +72,7 @@ func parseFor(value string) (*ForDirective, error) {
 		names = append(names, left)
 	}
 
-	d := &ForDirective{Iterable: right, vars: names, Frame: map[string]string{}}
+	d := &ForDirective{Iterable: right, IterableOffset: rightOffset, vars: names, Frame: map[string]string{}}
 	switch len(names) {
 	case 1:
 		// 单参数形式绑定到当前点作用域

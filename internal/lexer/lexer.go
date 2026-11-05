@@ -7,6 +7,7 @@ package lexer
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // TokenType 标识 token 的种类。
@@ -53,11 +54,16 @@ func (t TokenType) String() string {
 
 // Token 是一个词法单元。字段的含义随 Type 不同而不同：
 // Raw 在 Text/Comment 下为原文，在 Mustache 下为内部表达式，在 Tag 下为属性原文。
+//
+// Pos 与 RawPos 都是相对于整份源码的字节偏移，下游会把它们写入
+// text/template/parse 节点的 Pos 字段，使 html/template 报错能定位到 .vugo 源码的行列。
 type Token struct {
-	Type TokenType
-	Name string // 仅 Tag 类 token 有效，标签名（已小写）
-	Raw  string
-	Line int // 起始行号，从 1 开始
+	Type   TokenType
+	Name   string // 仅 Tag 类 token 有效，标签名（已小写）
+	Raw    string
+	Line   int // 起始行号，从 1 开始
+	Pos    int // token 起始字节偏移（如 Mustache 的 `{{`、Tag 的 `<`）
+	RawPos int // Raw 内容在源码中的起始字节偏移
 }
 
 // Lexer 扫描一份模板源码。
@@ -89,7 +95,7 @@ func (l *Lexer) Run() ([]Token, error) {
 // next 扫描下一个 token。
 func (l *Lexer) next() (Token, error) {
 	if l.pos >= len(l.src) {
-		return Token{Type: EOF, Line: l.line(l.pos)}, nil
+		return Token{Type: EOF, Line: l.line(l.pos), Pos: l.pos, RawPos: l.pos}, nil
 	}
 	rest := l.src[l.pos:]
 	switch {
@@ -122,9 +128,11 @@ func (l *Lexer) scanMustache() (Token, error) {
 	if end < 0 {
 		return Token{}, l.errorf(start, "插值 {{ 未闭合，缺少 }}")
 	}
-	raw := strings.TrimSpace(l.src[l.pos : l.pos+end])
+	inner := l.src[l.pos : l.pos+end]
+	raw := strings.TrimSpace(inner)
+	rawPos := l.pos + leadingSpace(inner)
 	l.pos += end + 2
-	return Token{Type: Mustache, Raw: raw, Line: l.line(start)}, nil
+	return Token{Type: Mustache, Raw: raw, Line: l.line(start), Pos: start, RawPos: rawPos}, nil
 }
 
 // scanComment 扫描 <!-- ... -->。
@@ -135,7 +143,7 @@ func (l *Lexer) scanComment() (Token, error) {
 		return Token{}, l.errorf(start, "HTML 注释未闭合，缺少 -->")
 	}
 	l.pos += end + 3
-	return Token{Type: Comment, Raw: l.src[start:l.pos], Line: l.line(start)}, nil
+	return Token{Type: Comment, Raw: l.src[start:l.pos], Line: l.line(start), Pos: start, RawPos: start}, nil
 }
 
 // scanTag 扫描一个开始标签、自闭合标签或结束标签。
@@ -170,14 +178,16 @@ func (l *Lexer) scanTag() (Token, error) {
 		} else {
 			return Token{}, l.errorf(start, "闭合标签 </%s> 缺少 >", name)
 		}
-		return Token{Type: CloseTag, Name: name, Line: l.line(start)}, nil
+		return Token{Type: CloseTag, Name: name, Line: l.line(start), Pos: start, RawPos: l.pos}, nil
 	}
 
 	bodyStart := l.pos
 	if err := l.skipToTagEnd(); err != nil {
 		return Token{}, err
 	}
-	body := strings.TrimSpace(l.src[bodyStart : l.pos-1]) // 去掉结尾的 '>'
+	rawBody := l.src[bodyStart : l.pos-1] // 去掉结尾的 '>'
+	body := strings.TrimSpace(rawBody)
+	rawPos := bodyStart + leadingSpace(rawBody)
 
 	typ := OpenTag
 	selfClosing := strings.HasSuffix(body, "/")
@@ -185,7 +195,7 @@ func (l *Lexer) scanTag() (Token, error) {
 		typ = SelfCloseTag
 		body = strings.TrimSpace(body[:len(body)-1])
 	}
-	return Token{Type: typ, Name: name, Raw: body, Line: l.line(start)}, nil
+	return Token{Type: typ, Name: name, Raw: body, Line: l.line(start), Pos: start, RawPos: rawPos}, nil
 }
 
 // scanDeclaration 扫描 <!DOCTYPE ...> 之类的声明，整体作为文本透传。
@@ -197,7 +207,7 @@ func (l *Lexer) scanDeclaration() (Token, error) {
 	} else {
 		l.pos += i + 1
 	}
-	return Token{Type: Text, Raw: l.src[start:l.pos], Line: l.line(start)}, nil
+	return Token{Type: Text, Raw: l.src[start:l.pos], Line: l.line(start), Pos: start, RawPos: start}, nil
 }
 
 // skipToTagEnd 前进到标签结尾的 '>' 之后，属性值中的引号会被正确跳过。
@@ -238,7 +248,7 @@ func (l *Lexer) scanText() (Token, error) {
 		// 兜底：至少前进一个字节，避免死循环
 		l.pos++
 	}
-	return Token{Type: Text, Raw: l.src[start:l.pos], Line: l.line(start)}, nil
+	return Token{Type: Text, Raw: l.src[start:l.pos], Line: l.line(start), Pos: start, RawPos: start}, nil
 }
 
 // line 返回字节偏移 pos 所在的行号（从 1 开始）。
@@ -252,6 +262,11 @@ func (l *Lexer) line(pos int) int {
 // errorf 构造一个带行号的词法错误。
 func (l *Lexer) errorf(pos int, format string, args ...any) error {
 	return fmt.Errorf("vugo: 第 %d 行: %s", l.line(pos), fmt.Sprintf(format, args...))
+}
+
+// leadingSpace 返回 s 开头空白字符的字节数，用于在 TrimSpace 后还原内容的真实偏移。
+func leadingSpace(s string) int {
+	return len(s) - len(strings.TrimLeftFunc(s, unicode.IsSpace))
 }
 
 func isAlpha(c byte) bool {

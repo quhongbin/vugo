@@ -1,0 +1,9 @@
+<div class="exprs">
+  {{ a === b }}
+  {{ a !== b }}
+  {{ a && b }}
+  {{ a || b }}
+  {{ !flag }}
+  {{ count > 10 }}
+  {{ formatTime(time) }}
+</div>

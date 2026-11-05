@@ -1,0 +1,4 @@
+<ul class="todos">
+  {{ range .todos }}<li>{{ .text }}</li>{{ end }}
+  {{ range $index, $item := .items }}<li>{{ $index }}: {{ $item.name }}</li>{{ end }}
+</ul>

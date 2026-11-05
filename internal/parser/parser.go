@@ -58,6 +58,10 @@ func isGoAction(code string) bool {
 	if c := code[0]; c == '.' || c == '$' {
 		return true
 	}
+	// {{/* 注释 */}} 是原生模板注释
+	if strings.HasPrefix(code, "/*") {
+		return true
+	}
 	// 类 Vue 的函数调用形如 len(items)，首个空格前不会是纯关键字，
 	// 因此用首词完全匹配即可区分两种风格。
 	// 注意：内置函数名（index/len/printf...）也可能是用户的循环变量名，
@@ -94,15 +98,15 @@ func (p *parser) parseDocument() (*ast.Document, error) {
 
 		case lexer.Text, lexer.Comment:
 			p.advance()
-			appendNode(&ast.Text{Value: tok.Raw, Line: tok.Line})
+			appendNode(&ast.Text{Value: tok.Raw, Line: tok.Line, Pos: tok.Pos})
 
 		case lexer.Mustache:
 			p.advance()
 			if isGoAction(tok.Raw) {
-				appendNode(&ast.GoAction{Code: tok.Raw, Line: tok.Line})
+				appendNode(&ast.GoAction{Code: tok.Raw, Line: tok.Line, Pos: tok.RawPos})
 				break
 			}
-			appendNode(&ast.Interpolation{Expr: tok.Raw, Line: tok.Line})
+			appendNode(&ast.Interpolation{Expr: tok.Raw, Line: tok.Line, Pos: tok.RawPos})
 
 		case lexer.OpenTag, lexer.SelfCloseTag:
 			p.advance()
@@ -148,45 +152,91 @@ func (p *parser) parseElement(tok lexer.Token) (*ast.Element, error) {
 		Name:        tok.Name,
 		SelfClosing: tok.Type == lexer.SelfCloseTag,
 		Line:        tok.Line,
+		Pos:         tok.Pos,
 	}
 	for _, a := range attrs {
+		vpos := tok.RawPos + a.valuePos
+		if strings.Contains(a.name, "{{") || strings.Contains(a.name, "}}") {
+			return nil, p.errorf(tok, "标签 <%s> 的属性列表中直接出现了 {{ }}，AST 模式只支持把 {{ }} 写在属性值的引号内", tok.Name)
+		}
 		switch {
 		case strings.HasPrefix(a.name, "v-"):
 			name := strings.TrimPrefix(a.name, "v-")
 			switch {
 			case strings.HasPrefix(name, "bind:"):
 				el.Bindings = append(el.Bindings, ast.Binding{
-					Kind: ast.BindAttr, Attr: strings.TrimPrefix(name, "bind:"), Value: a.value, Line: tok.Line,
+					Kind: ast.BindAttr, Attr: strings.TrimPrefix(name, "bind:"), Value: a.value, Line: tok.Line, ValuePos: vpos,
 				})
 			case strings.HasPrefix(name, "on:"):
 				el.Bindings = append(el.Bindings, ast.Binding{
-					Kind: ast.BindEvent, Attr: strings.TrimPrefix(name, "on:"), Value: a.value, Line: tok.Line,
+					Kind: ast.BindEvent, Attr: strings.TrimPrefix(name, "on:"), Value: a.value, Line: tok.Line, ValuePos: vpos,
 				})
 			default:
-				el.Directives = append(el.Directives, ast.Directive{Name: name, Value: a.value, Line: tok.Line})
+				el.Directives = append(el.Directives, ast.Directive{Name: name, Value: a.value, Line: tok.Line, ValuePos: vpos})
 			}
 
 		case strings.HasPrefix(a.name, ":"):
 			el.Bindings = append(el.Bindings, ast.Binding{
-				Kind: ast.BindAttr, Attr: strings.TrimPrefix(a.name, ":"), Value: a.value, Line: tok.Line,
+				Kind: ast.BindAttr, Attr: strings.TrimPrefix(a.name, ":"), Value: a.value, Line: tok.Line, ValuePos: vpos,
 			})
 
 		case strings.HasPrefix(a.name, "@"):
 			el.Bindings = append(el.Bindings, ast.Binding{
-				Kind: ast.BindEvent, Attr: strings.TrimPrefix(a.name, "@"), Value: a.value, Line: tok.Line,
+				Kind: ast.BindEvent, Attr: strings.TrimPrefix(a.name, "@"), Value: a.value, Line: tok.Line, ValuePos: vpos,
 			})
 
 		default:
-			el.Attrs = append(el.Attrs, ast.Attr{Name: a.name, Value: a.value})
+			parts, err := splitValue(a.value, vpos, tok.Line)
+			if err != nil {
+				return nil, p.errorf(tok, "标签 <%s> 的属性 %s: %v", tok.Name, a.name, err)
+			}
+			el.Attrs = append(el.Attrs, ast.Attr{Name: a.name, Value: a.value, HasValue: a.hasValue, ValuePos: vpos, Parts: parts})
 		}
 	}
 	return el, nil
 }
 
-// rawAttr 是尚未分类的属性。
+// splitValue 把普通属性值按 {{ }} 拆成 Text / Interpolation / GoAction 片段。
+// 值中不含 {{ 时返回 nil；base 为值首字节在源码中的偏移。
+func splitValue(v string, base, line int) ([]ast.Node, error) {
+	if !strings.Contains(v, "{{") {
+		return nil, nil
+	}
+	var out []ast.Node
+	i := 0
+	for i < len(v) {
+		j := strings.Index(v[i:], "{{")
+		if j < 0 {
+			out = append(out, &ast.Text{Value: v[i:], Line: line, Pos: base + i})
+			break
+		}
+		if j > 0 {
+			out = append(out, &ast.Text{Value: v[i : i+j], Line: line, Pos: base + i})
+		}
+		start := i + j + 2
+		k := strings.Index(v[start:], "}}")
+		if k < 0 {
+			return nil, fmt.Errorf("属性值中的 {{ 未闭合，缺少 }}")
+		}
+		inner := v[start : start+k]
+		raw := strings.TrimSpace(inner)
+		rawPos := base + start + len(inner) - len(strings.TrimLeft(inner, " \t\n\r"))
+		if isGoAction(raw) {
+			out = append(out, &ast.GoAction{Code: raw, Line: line, Pos: rawPos})
+		} else {
+			out = append(out, &ast.Interpolation{Expr: raw, Line: line, Pos: rawPos})
+		}
+		i = start + k + 2
+	}
+	return out, nil
+}
+
+// rawAttr 是尚未分类的属性。valuePos 是 value 相对属性原文的字节偏移。
 type rawAttr struct {
-	name  string
-	value string
+	name     string
+	value    string
+	hasValue bool
+	valuePos int
 }
 
 // parseAttrs 解析标签内的属性原文，支持 name、name=value、name="value"、name='value'。
@@ -209,13 +259,18 @@ func parseAttrs(raw string) ([]rawAttr, error) {
 		}
 
 		value := ""
+		hasValue := false
+		valuePos := start
 		i = skipSpace(raw, i)
 		if i < len(raw) && raw[i] == '=' {
+			hasValue = true
 			i++
 			i = skipSpace(raw, i)
+			valuePos = i
 			if i < len(raw) && (raw[i] == '"' || raw[i] == '\'') {
 				quote := raw[i]
 				i++
+				valuePos = i
 				end := strings.IndexByte(raw[i:], quote)
 				if end < 0 {
 					value = raw[i:]
@@ -232,7 +287,7 @@ func parseAttrs(raw string) ([]rawAttr, error) {
 				value = raw[start:i]
 			}
 		}
-		out = append(out, rawAttr{name: name, value: value})
+		out = append(out, rawAttr{name: name, value: value, hasValue: hasValue, valuePos: valuePos})
 	}
 	return out, nil
 }

@@ -1,5 +1,5 @@
 BIN := bin/vugo
-PKG := ./...
+PKG := ./cmd/... ./internal/...
 
 .PHONY: help build test cover fmt vet lint tidy run clean
 
@@ -13,10 +13,10 @@ test: ## 运行全部测试
 	go test $(PKG)
 
 cover: ## 运行测试并输出覆盖率
-	go test -coverpkg=./... -coverprofile=coverage.out $(PKG) && go tool cover -func=coverage.out
+	go test -coverpkg=./cmd/...,./internal/... -coverprofile=coverage.out $(PKG) && go tool cover -func=coverage.out
 
 fmt: ## 格式化代码
-	gofmt -l -w .
+	gofmt -l -w ./cmd ./internal
 
 vet: ## 静态检查
 	go vet $(PKG)

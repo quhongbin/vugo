@@ -1,0 +1,12 @@
+{{ define "card" }}
+<div class="card">
+  <h3>{{ .Title }}</h3>
+  {{ if .ShowBody }}
+  <p>{{ .Body }}</p>
+  {{ end }}
+</div>
+{{ end }}
+{{ template "card" . }}
+{{ range .Items }}
+  <span>{{ . }}</span>
+{{ end }}

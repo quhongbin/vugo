@@ -152,3 +152,43 @@ func TestDuplicateVFor(t *testing.T) {
 		t.Errorf("重复 v-for 应当报错, 实际: %v", err)
 	}
 }
+
+// TestCrossElementControlStructureError 验证原生控制结构跨越 HTML 标签闭合边界时明确报错。
+func TestCrossElementControlStructureError(t *testing.T) {
+	comp := compiler.New()
+	_, err := comp.Compile(`<div>{{ if .wrap }}<p>x</div>{{ end }}</p>`)
+	if err == nil {
+		t.Fatal("跨标签边界的 {{ if }}...{{ end }} 在 AST 模式下应当报错")
+	}
+	if !strings.Contains(err.Error(), "跨越") && !strings.Contains(err.Error(), "闭合") {
+		t.Errorf("错误信息应说明跨标签闭合限制, 实际: %v", err)
+	}
+}
+
+// TestBareMustacheInTagAttrListError 验证标签属性列表中裸写的 {{ if ... }} 报错。
+func TestBareMustacheInTagAttrListError(t *testing.T) {
+	comp := compiler.New()
+	_, err := comp.Compile(`<input {{ if .disabled }}disabled{{ end }} />`)
+	if err == nil {
+		t.Fatal("属性列表中直接出现 {{ }} 在 AST 模式下应当报错")
+	}
+}
+
+// TestInterpolationInAttrValue 验证属性值引号内的 {{ expr }} 可以正常构建为 parse.Tree 并转义执行。
+func TestInterpolationInAttrValue(t *testing.T) {
+	tmpl, err := compiler.New().CompileTemplate(`<a href="/u/{{ user.id }}" title="{{ user.name }}">link</a>`)
+	if err != nil {
+		t.Fatalf("CompileTemplate 失败: %v", err)
+	}
+	var buf bytes.Buffer
+	err = tmpl.Execute(&buf, map[string]any{
+		"user": map[string]any{"id": "42", "name": `a"b`},
+	})
+	if err != nil {
+		t.Fatalf("Execute 失败: %v", err)
+	}
+	want := `<a href="/u/42" title="a&#34;b">link</a>`
+	if got := buf.String(); got != want {
+		t.Errorf("渲染结果 = %q, 期望 %q", got, want)
+	}
+}

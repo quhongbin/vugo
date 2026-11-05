@@ -1,0 +1,8 @@
+<div class="groups">
+  <section v-for="group in groups">
+    <h2>{{ group.title }}</h2>
+    <ul>
+      <li v-for="(child, idx) in group.children">{{ idx }}. {{ child.name }}</li>
+    </ul>
+  </section>
+</div>

@@ -49,7 +49,7 @@ func TestAttrValueKeepsGtAndBraces(t *testing.T) {
 		t.Errorf("mustache 内容 = %q, 期望 %q", raws[1], "msg")
 	}
 	for i, k := range tokens {
-		t.Logf("%d: %+v\n",i, k)		
+		t.Logf("%d: %+v\n", i, k)
 	}
 
 }

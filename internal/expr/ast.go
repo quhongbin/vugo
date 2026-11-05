@@ -1,7 +1,7 @@
-// Package expr 实现类 Vue 表达式到 html/template 表达式的转译。
+// Package expr 实现类 Vue 表达式到 text/template/parse 管道节点的构建。
 //
 // 它是模板转译的一个"子语言"层：自带词法（scanner.go）、语法（parser.go）、
-// 作用域（scope.go）与代码生成（render.go），不依赖模板 AST，
+// 作用域（scope.go）与 parse 节点构建（build.go），不依赖模板 AST，
 // 因此可以独立测试与复用。
 package expr
 

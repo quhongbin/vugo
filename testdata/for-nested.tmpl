@@ -1,0 +1,8 @@
+<div class="groups">
+  {{ range .groups }}<section>
+    <h2>{{ .title }}</h2>
+    <ul>
+      {{ range $idx, $child := .children }}<li>{{ $idx }}. {{ $child.name }}</li>{{ end }}
+    </ul>
+  </section>{{ end }}
+</div>

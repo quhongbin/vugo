@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ page.title }}</title>
+</head>
+<body>
+  <!-- 静态注释保持原样 -->
+  <h1 class="title">{{ user.name }}</h1>
+  <p>{{ msg }}</p>
+  <input type="text" disabled>
+  <br />
+</body>
+</html>
