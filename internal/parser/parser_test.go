@@ -29,17 +29,22 @@ func TestIsGoAction(t *testing.T) {
 		{"index", false},      // 裸内置函数名优先当作用户变量（循环变量常叫 index）
 	}
 	for _, c := range cases {
-		if got := isGoAction(c.code); got != c.want {
+		got := isGoAction(c.code)
+		t.Logf("isGoAction: code=%q, got=%v, want=%v", c.code, got, c.want)
+		if got != c.want {
 			t.Errorf("isGoAction(%q) = %v, 期望 %v", c.code, got, c.want)
 		}
 	}
 }
 
 func TestParseAttrs(t *testing.T) {
-	attrs, err := parseAttrs(`id="a b" class='c' disabled data-x=1 v-for="(item, index) in list"`)
+	raw := `id="a b" class='c' disabled data-x=1 v-for="(item, index) in list"`
+	t.Logf("parseAttrs raw input: %s", raw)
+	attrs, err := parseAttrs(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("parseAttrs parsed count: %d, attrs: %+v", len(attrs), attrs)
 	want := []struct{ name, value string }{
 		{"id", "a b"},
 		{"class", "c"},
@@ -51,6 +56,7 @@ func TestParseAttrs(t *testing.T) {
 		t.Fatalf("属性数量 = %d, 期望 %d: %+v", len(attrs), len(want), attrs)
 	}
 	for i, a := range attrs {
+		t.Logf("attr[%d]: got=(name=%q, value=%q), want=(name=%q, value=%q)", i, a.name, a.value, want[i].name, want[i].value)
 		if a.name != want[i].name || a.value != want[i].value {
 			t.Errorf("属性[%d] = %+v, 期望 %+v", i, a, want[i])
 		}
@@ -58,7 +64,9 @@ func TestParseAttrs(t *testing.T) {
 }
 
 func TestParseDirectiveClassification(t *testing.T) {
-	doc, err := ParseString(`<a v-bind:href="url" v-on:click="go" @submit="s" :key="x.id" v-for="u in users"></a>`)
+	raw := `<a v-bind:href="url" v-on:click="go" @submit="s" :key="x.id" v-for="u in users"></a>`
+	t.Logf("ParseString raw input: %s", raw)
+	doc, err := ParseString(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +74,10 @@ func TestParseDirectiveClassification(t *testing.T) {
 	if !ok {
 		t.Fatalf("根节点类型 = %T, 期望 *ast.Element", doc.Nodes[0])
 	}
+
+	t.Logf("el.Directives: %+v", el.Directives)
+	t.Logf("el.Bindings: %+v", el.Bindings)
+	t.Logf("el.Attrs: %+v", el.Attrs)
 
 	if len(el.Directives) != 1 || el.Directives[0].Name != "for" || el.Directives[0].Value != "u in users" {
 		t.Errorf("指令分类错误: %+v", el.Directives)
